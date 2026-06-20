@@ -1,29 +1,21 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Virtual environments
-.venv/
-venv/
-ENV/
-env/
-
-# Environment variables
+# Secrets — never commit real API keys
 .env
-.env.*
 
-# IDEs and editors
-.vscode/
-.idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.swp
+# Python virtual environment
+venv/
+.venv/
 
-# OS generated files
-Thumbs.db
-ehthumbs.db
-Desktop.ini
+# Python caches
+__pycache__/
+*.pyc
+
+# Model weights (auto-downloaded by ultralytics on first run)
+*.pt
+weights/
+
+# Runtime / debug image output
+frame.png
+*_annotated.png
+
+# OS / editor
 .DS_Store

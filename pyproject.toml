@@ -1,10 +1,18 @@
 [project]
 name = "robhackathon"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+description = "Autonomous helmet-search drone navigation"
 requires-python = ">=3.13"
 dependencies = [
-    "cyberwave>=0.5.0",
-    "dotenv>=0.9.9",
+    "cyberwave",
+    "pillow",
+    "ipython",
+    "opencv-python",
+    "numpy",
+    "supervision",
+    "python-dotenv",
+    "filterpy",
+    "simple-pid",
+    "ultralytics",
+    "streamlit>=1.58.0",
 ]
