@@ -3,7 +3,7 @@
 ## Context
 
 Hackathon project for the Cyberwave hackathon (https://luma.com/mmc68m0b). User uploads
-an image in a dashboard; a DJI Mini 3 Pro takes off, runs open-vocabulary detection
+an image in a dashboard; a DJI Mini 3 takes off, runs open-vocabulary detection
 (YOLO-World) on its video feed, and when it spots the target it hands off the GPS
 position to a Unitree Go2 (or Spot) robot dog, which walks to that point.
 
@@ -11,13 +11,39 @@ position to a Unitree Go2 (or Spot) robot dog, which walks to that point.
 `cw.affect("live")` for real hardware — same code. Both real drone + real dog will be
 on-site for demo day.
 
-**Locked stack:** Cyberwave Python SDK + paho-mqtt; Streamlit single-file dashboard;
+**Locked stack:** Cyberwave Python SDK (it wraps both REST and MQTT — no third-party
+transport library needed for a remote client); Streamlit single-file dashboard;
 YOLO-World via Ultralytics (Grounding DINO as fallback); everything runs on the user's
-laptop (HTTPS + MQTT to Cyberwave cloud).
+laptop (HTTPS + MQTT to Cyberwave cloud, via the SDK).
+
+### Hardware note: DJI Mini 3 (non-Pro)
+The user owns a **DJI Mini 3**, NOT the Pro. The Cyberwave catalog only lists
+`dji/DJI-Mini-3-Pro` (note the mixed-case slug — quote verbatim) and `dji/dji-mini-4-pro`.
+The non-Pro Mini 3 has no dedicated catalog slug. The `dji-mini-3-site-sweep` tutorial
+is titled "DJI Mini 3" (non-Pro) but uses the Pro slug in code, suggesting they're
+treated interchangeably at the twin level. **Plan:** use slug `dji/DJI-Mini-3-Pro` for
+the twin and confirm with Cyberwave Discord / info@cyberwave.com whether a real Mini 3
+can bind to that twin via the Edge for DJI Android app. Functional differences to
+watch for: the non-Pro Mini 3 has a pitch-only gimbal (no roll), no obstacle sensing,
+and DJI Virtual Stick support is unconfirmed for it.
+
+### Transport note: Zenoh vs MQTT vs SDK
+Cyberwave's edge runtime uses **Zenoh** as its local data bus and a **Zenoh-MQTT
+bridge** forwards selected channels to the cloud MQTT broker. Zenoh is only relevant
+when your code runs *on* the edge box (e.g. on the Go2's companion compute). For a
+remote laptop client, **the cloud-facing transport is MQTT, but you do NOT call MQTT
+directly** — the `cyberwave` Python SDK wraps both REST and MQTT into a single
+interface. So no `paho-mqtt` and no `zenoh-python` in `requirements.txt`. The plan
+calls SDK methods (`drone.pose.get()`, `drone.capture_frame()`, `dog.edit_position()`,
+etc.); only if a needed verb (specifically the dog's `navigate_to`) turns out NOT to be
+exposed by the installed SDK do we drop down to raw MQTT — listed as a **fallback**, not
+the default.
 
 **Why Cyberwave's pub/sub fits:** both twins live in one Environment and share a world
-frame. Drone publishes pose to `cyberwave/twin/{drone_uuid}/position`; we publish a
-`navigate/command` to the dog's twin. No custom broker, no custom auth.
+frame. The SDK already subscribes to `cyberwave/twin/{drone_uuid}/position` under the
+hood for `pose.get()`; for dog dispatch we either call the SDK helper (TBD on
+discovery) or publish to `cyberwave/twin/{dog_uuid}/navigate/command`. No custom
+broker, no custom auth.
 
 ---
 
@@ -54,9 +80,8 @@ frame. Drone publishes pose to `cyberwave/twin/{drone_uuid}/position`; we publis
 
 2. **`requirements.txt`** (pin):
    ```
-   cyberwave
+   cyberwave                 # wraps REST + MQTT; no separate transport lib needed
    streamlit>=1.36
-   paho-mqtt>=2.1
    opencv-python>=4.10
    pillow>=10.0
    numpy>=1.26,<2.0
@@ -65,37 +90,53 @@ frame. Drone publishes pose to `cyberwave/twin/{drone_uuid}/position`; we publis
    ultralytics>=8.3
    torch>=2.2
    transformers>=4.44
+   # Optional fallback ONLY if Phase 0 discovery shows the SDK lacks a dog-navigate helper:
+   # paho-mqtt>=2.1
    ```
 
 3. **Cyberwave dashboard** (cyberwave.com)
    - Create Workspace `hackathon-cw` → copy `workspace_uuid`.
    - Profile → API Tokens → Create Token (shown ONCE) → save.
    - Create Environment `field-1` → copy `environment_uuid`.
-   - Add twin `dji/dji-mini-3-pro` → copy `drone_uuid`.
+   - Add twin `dji/DJI-Mini-3-Pro` → copy `drone_uuid`. (User owns the non-Pro Mini 3
+     but Cyberwave's catalog only lists the Pro slug — see Context note. Verify
+     binding via the Edge for DJI app with a real Mini 3 before the demo.)
    - Add twin `unitree/go2` → copy `dog_uuid`. (Same environment — they MUST share the
      world frame.)
 
 4. **`.env`** keys: `CYBERWAVE_API_KEY`, `CYBERWAVE_WORKSPACE_ID`,
    `CYBERWAVE_ENVIRONMENT_ID`, `CYBERWAVE_BASE_URL=https://api.cyberwave.com`,
-   `CYBERWAVE_MQTT_HOST=mqtt.cyberwave.com`, `CYBERWAVE_MQTT_PORT=8883`,
-   `DRONE_TWIN_UUID`, `DOG_TWIN_UUID`, `DRONE_TWIN_SLUG=dji/dji-mini-3-pro`,
+   `DRONE_TWIN_UUID`, `DOG_TWIN_UUID`, `DRONE_TWIN_SLUG=dji/DJI-Mini-3-Pro`,
    `DOG_TWIN_SLUG=unitree/go2`, `DETECTOR=stub`, `DETECTION_CONF_THRESH=0.35`,
    `SEARCH_ALTITUDE_M=2.0`, `SEARCH_YAW_STEP_DEG=30`, `SEARCH_ASCEND_STEP_M=0.5`,
    `SEARCH_MAX_ASCEND_M=6.0`.
+   MQTT host/port are SDK internals — don't set them unless Phase 0 discovery shows
+   you need the paho-mqtt fallback.
 
-5. **`scripts/smoke_cyberwave.py`**
+5. **`scripts/smoke_cyberwave.py` — also discovers the real SDK surface.**
    ```python
    from cyberwave import Cyberwave
    from config import CFG
    cw = Cyberwave(); cw.affect("simulation")
    drone = cw.twin(CFG.drone_slug); dog = cw.twin(CFG.dog_slug)
-   print("drone:", drone.pose.get()); print("dog:", dog.pose.get())
-   ```
-   Also: connect paho-mqtt with `username_pw_set("api", CFG.api_key)` and verify a
-   subscribe on `cyberwave/twin/{drone_uuid}/position` doesn't 401. **Pin the MQTT auth
-   scheme here** — research didn't confirm if it's bearer-as-password or a JWT helper.
+   print("drone pose:", drone.pose.get())
+   print("dog   pose:", dog.pose.get())
 
-**Checkpoint:** smoke test prints two poses + MQTT subscribe succeeds.
+   # Discovery: figure out what the installed SDK actually exposes, because the
+   # docs and the GitHub repo disagree on twin methods like navigate_to / listen /
+   # move_forward. Print the public surface so we know what to call.
+   def public(obj): return sorted(a for a in dir(obj) if not a.startswith("_"))
+   print("drone methods:", public(drone))
+   print("dog   methods:", public(dog))
+   print("cw    methods:", public(cw))
+   ```
+   Look for any of: `dog.navigate_to(...)`, `dog.move_to(...)`, `dog.move_forward(...)`,
+   `cw.on_synchronized(...)`, `twin.listen(...)`, `twin.publish(...)`. Whatever exists
+   is what `cyberwave_io.py` will call. If NOTHING dog-navigation-like exists, add
+   `paho-mqtt` to `requirements.txt` and fall back to the documented topic
+   `cyberwave/twin/{dog_uuid}/navigate/command` (`TwinNavigationCommandSchema` payload).
+
+**Checkpoint:** smoke test prints two poses + a known list of twin methods to use.
 
 ---
 
@@ -109,23 +150,37 @@ without fighting vision models yet.
 
 ### `cyberwave_io.py` — single source of truth for Cyberwave calls
 
-`CWBridge` class wrapping:
-- `Cyberwave()` + `cw.affect(mode)` + `cw.twin(...)` for drone + dog
-- Drone control: `takeoff(alt)`, `land()`, `return_to_home()`, `gimbal_rotate(pitch,duration)`,
-  `gimbal_recenter()`, `turn_left(rad)`, `ascend(m)`, `is_hovering()`, `get_frame("numpy")`,
-  `pose.get()`.
-- **Dog navigate via MQTT publish** (no Python wrapper documented):
+`CWBridge` class wrapping the SDK only (never imports `paho.mqtt` unless the
+discovery fallback engages — see Phase 0):
+
+- `Cyberwave()` + `cw.affect(mode)` + `cw.twin(...)` for drone + dog.
+- Drone control: `takeoff(altitude=…)`, `land()`, `return_to_home()`,
+  `gimbal_rotate(pitch, duration)`, `gimbal_recenter()`, `turn_left(rad)`, `ascend(m)`,
+  `is_hovering()`, `get_frame("numpy")`, `pose.get()`.
+- Pose polling: tight loop `bridge.drone_pose = drone.pose.get()` every 0.5s in a
+  background thread. The SDK handles the underlying MQTT subscription; we just cache
+  the latest dict for Streamlit and the coordinator to read.
+- **Dog navigate — try SDK first, MQTT fallback**:
   ```python
-  topic = f"cyberwave/twin/{CFG.dog_uuid}/navigate/command"
-  payload = {"command":"navigate","position":[x,y,z],"yaw":yaw,
-             "frame":"world","environment_uuid":CFG.environment_id,
-             "metadata":{"source":"drone_handoff"}}
-  client.publish(topic, json.dumps(payload), qos=1)
+  def dog_navigate_to(self, x, y, z=0.0, yaw=0.0):
+      # Preferred (discovered in Phase 0 smoke test):
+      if hasattr(self.dog, "navigate_to"):
+          return self.dog.navigate_to(x=x, y=y, z=z, yaw=yaw, frame="world")
+      if hasattr(self.dog, "move_to"):
+          return self.dog.move_to(position=[x, y, z], yaw=yaw, frame="world")
+      # Fallback: raw MQTT publish to the documented topic
+      import json, paho.mqtt.client as mqtt  # imported lazily
+      payload = {"command": "navigate", "position": [x, y, z], "yaw": yaw,
+                 "frame": "world", "environment_uuid": CFG.environment_id,
+                 "metadata": {"source": "drone_handoff"}}
+      self._mqtt.publish(
+          f"cyberwave/twin/{CFG.dog_uuid}/navigate/command",
+          json.dumps(payload), qos=1,
+      )
   ```
-- MQTT subscribe to `cyberwave/twin/{drone_uuid}/position`,
-  `cyberwave/twin/{dog_uuid}/position`, `cyberwave/twin/{dog_uuid}/navigate/status`.
-  Cache latest payloads on `self.latest_drone_pose`, `latest_dog_pose`,
-  `latest_dog_nav_status` for Streamlit to read.
+- Dog nav status: again, try `dog.on_navigate_status(cb)` / `dog.listen(...)` first; if
+  absent, fall back to a paho MQTT subscribe on
+  `cyberwave/twin/{dog_uuid}/navigate/status`.
 
 ### `detector.py` (Phase 1 — stub only)
 
@@ -286,7 +341,7 @@ Supporting: `config.py`, `requirements.txt`, `.env`, `scripts/smoke_cyberwave.py
 ## Verification recipe
 
 ### Sim path (must pass before live)
-1. `python scripts/smoke_cyberwave.py` — both poses print, MQTT subscribe doesn't 401.
+1. `python scripts/smoke_cyberwave.py` — both poses print, SDK surface logged.
 2. `streamlit run app.py` with `Mode=simulation`, `DETECTOR=stub`. Open Cyberwave
    Playground in another tab.
 3. Upload any image → "Find it" → expect: drone arms, ascends to 2m, yaws in 30° steps,
@@ -295,8 +350,7 @@ Supporting: `config.py`, `requirements.txt`, `.env`, `scripts/smoke_cyberwave.py
 4. Switch `DETECTOR=yolo_world`, upload a photo of an object visible in the Playground
    scene, type its label, repeat. Bbox preview appears.
 5. Repeat with `DETECTOR=grounding_dino` to confirm the alt path doesn't crash.
-6. Mid-run, click "Stop" — coordinator aborts cleanly, drone RTHs, no zombie MQTT
-   connections (`lsof -i :8883` is clean after).
+6. Mid-run, click "Stop" — coordinator aborts cleanly, drone RTHs, no zombie connections.
 
 ### Live path (demo day)
 1. Pre-flight per Phase 4 — both twins "online" in Cyberwave dashboard.
@@ -313,14 +367,16 @@ Supporting: `config.py`, `requirements.txt`, `.env`, `scripts/smoke_cyberwave.py
 
 ## Open questions to resolve empirically during Phase 0/1
 
-(These are not in the docs — pin them down with the smoke test, don't assume.)
+(Not in the docs — pin them down with the smoke test, don't assume.)
 
-1. **MQTT auth**: is it `username="api", password=<api_key>`, or a JWT helper from the SDK?
-2. **`pose.get()` shape in sim vs live**: sim likely returns `{x,y,z,yaw}`; live likely
+1. **SDK dog-navigate surface**: does the installed `cyberwave` package expose
+   `dog.navigate_to(...)`, `dog.move_to(...)`, or `dog.move_forward(...)`? The smoke
+   test `dir(dog)` output answers this and determines whether paho-mqtt is needed.
+2. **`pose.get()` shape in sim vs live**: sim likely `{x,y,z,yaw}`; live likely
    `{lat,lon,alt,heading}`. Confirm and contain in `normalize_pose`.
 3. **Yaw convention** (compass vs ENU; deg vs rad). Spin once in Playground and log.
-4. Whether `dog.move_forward()` and MQTT `navigate/command` race. **Locked:** MQTT-only
-   for handoff; never call both in the same run.
+4. **DJI Mini 3 (non-Pro) binding**: confirm the non-Pro Mini 3 can bind to the
+   `dji/DJI-Mini-3-Pro` twin via the Edge for DJI Android app. Ask on Discord if unsure.
 
 ---
 
@@ -332,5 +388,8 @@ Supporting: `config.py`, `requirements.txt`, `.env`, `scripts/smoke_cyberwave.py
 - DJI Mini 3 tutorial: https://docs.cyberwave.com/tutorials/dji-mini-3-site-sweep
 - Go2 tutorial: https://docs.cyberwave.com/tutorials/go2-digital-to-physical
 - MQTT API: https://docs.cyberwave.com/api-reference/mqtt/main
+- Zenoh-MQTT Bridge (edge-only context): https://docs.cyberwave.com/overview/tools/zenoh-mqtt-bridge
+- Edge driver wire format: https://docs.cyberwave.com/feature-reference/edge/drivers/data-wire-format
 - TwinNavigationCommandSchema: https://docs.cyberwave.com/api-reference/rest/TwinNavigationCommandSchema
+- Hardware catalog: https://docs.cyberwave.com/hardware
 - Python SDK repo: https://github.com/cyberwave-os/cyberwave-python
