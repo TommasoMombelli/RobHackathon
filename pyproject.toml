@@ -1,0 +1,17 @@
+[project]
+name = "robhackathon"
+version = "0.1.0"
+description = "Autonomous helmet-search drone navigation"
+requires-python = ">=3.13"
+dependencies = [
+    "cyberwave",
+    "pillow",
+    "ipython",
+    "opencv-python",
+    "numpy",
+    "supervision",
+    "python-dotenv",
+    "filterpy",
+    "simple-pid",
+    "ultralytics",
+]
