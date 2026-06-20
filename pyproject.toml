@@ -6,4 +6,5 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "cyberwave>=0.5.0",
+    "dotenv>=0.9.9",
 ]
