@@ -1,4 +1,4 @@
-# 🚁 Rescue Drone
+# 🚁 ResQ-Swarm: Autonomous Robot Swarms to Save Lives
 
 > **Autonomous search-and-rescue: a drone finds the victim, a robot dog runs to them.**
 
