@@ -321,6 +321,7 @@ def verify_movement():
 
 def land():
     drone.land()
+    drone.land()
 
 
 if __name__ == "__main__":
