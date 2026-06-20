@@ -20,6 +20,7 @@ import os
 import sys
 import threading
 import time
+from html import escape
 
 import streamlit as st
 
@@ -32,27 +33,36 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .stApp { background-color: #0f1117; }
+    /* Streamlit otherwise inherits the browser/theme text colour, which was
+       too dark against the dashboard's custom dark background. */
+    .stApp { background-color: #0b1020; color: #f4f7fb; }
+    .stApp p, .stApp span, .stApp label, .stApp li,
+    div[data-testid="stMarkdownContainer"],
+    div[data-testid="stCaptionContainer"] { color: #dce5f2; }
+    .stApp h1, .stApp h2, .stApp h3,
+    div[data-testid="stMetricValue"] { color: #ffffff !important; }
+    div[data-testid="stMetricLabel"] { color: #b9c8dc !important; }
+    .stApp button { color: #f8fbff !important; }
     div[data-testid="stMetric"] {
-        background: #1e2130; border-radius: 8px;
+        background: #192235; border: 1px solid #33415c; border-radius: 8px;
         padding: 8px 14px; margin-bottom: 6px;
     }
     .badge {
         display: inline-block; padding: 4px 16px; border-radius: 20px;
         font-weight: 700; font-size: 0.9rem; letter-spacing: 0.06em;
     }
-    .badge-idle    { background:#2a2d3e; color:#9ea3c0; }
-    .badge-preview { background:#1e3a5f; color:#6ab0f5; }
-    .badge-running { background:#3a2e00; color:#f5c842; }
-    .badge-LANDED  { background:#002a00; color:#42f542; }
-    .badge-ERROR   { background:#3a0000; color:#f54242; }
+    .badge-idle    { background:#2a3448; color:#e0e8f5; }
+    .badge-preview { background:#123d66; color:#c4e4ff; }
+    .badge-running { background:#594600; color:#fff0a8; }
+    .badge-LANDED  { background:#06450d; color:#b7ffc0; }
+    .badge-ERROR   { background:#5a1010; color:#ffd0d0; }
     .log-box {
-        background:#0a0c12; border:1px solid #2a2d3e; border-radius:6px;
-        padding:10px; font-family:monospace; font-size:0.78rem;
-        height:280px; overflow-y:auto; color:#c8ccd8; white-space:pre-wrap;
+        background:#070b14; border:1px solid #3a4c6c; border-radius:6px;
+        padding:10px; font-family:monospace; font-size:0.82rem;
+        height:280px; overflow-y:auto; color:#edf4ff; white-space:pre-wrap;
     }
-    .log-warn  { color:#f5c842; }
-    .log-error { color:#f54242; }
+    .log-warn  { color:#ffe27a !important; }
+    .log-error { color:#ff9797 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -84,6 +94,38 @@ def _start_background_threads(_main, _state):
     """Frame-fetching background threads. Started once, live for the process."""
     import vision
 
+    def fetch_preview_frame():
+        """Return a BGR preview frame, including the edge-camera fallback.
+
+        ``get_latest_frame`` reads Cyberwave's cloud buffer, which can be
+        empty even though the DJI camera is working.  The mission code already
+        handles that case by asking ``remote_edge`` for a fresh frame; the
+        dashboard needs the same path or it stays on "Waiting for first frame"
+        forever.
+        """
+        try:
+            img_bytes = _main.drone.get_latest_frame()
+            if img_bytes:
+                try:
+                    return vision.decode_frame(img_bytes)
+                except (vision.NoFrameError, ValueError):
+                    # A JSON "no frame" response is normal for this endpoint.
+                    pass
+        except Exception:
+            pass
+
+        try:
+            frame = _main.drone.get_frame(format="numpy", source="remote_edge")
+            if frame is None or getattr(frame, "size", 0) == 0:
+                return None
+            # ``remote_edge`` normally returns a BGR NumPy image.  Accept a
+            # byte payload too, in case the driver implementation changes.
+            if getattr(frame, "ndim", None) == 3:
+                return frame
+            return vision.decode_frame(frame)
+        except Exception:
+            return None
+
     def frame_loop():
         frame_png = os.path.join(os.path.dirname(__file__), "frame.png")
         last_mtime = 0.0
@@ -102,11 +144,11 @@ def _start_background_threads(_main, _state):
                     pass
                 time.sleep(0.4)
             else:
-                # Idle / preview: poll the drone camera directly.
+                # Idle / preview: use the cloud buffer, then a fresh edge
+                # capture when that buffer has no frame.
                 try:
-                    img_bytes = _main.drone.get_latest_frame()
-                    if img_bytes:
-                        frame = vision.decode_frame(img_bytes)
+                    frame = fetch_preview_frame()
+                    if frame is not None:
                         helmet = vision.detect_helmet(frame)
                         carpet = vision.detect_carpet(frame)
                         annotated = vision.annotate(frame, helmet=helmet, carpet=carpet)
@@ -185,11 +227,12 @@ if stop_clicked:
 st.divider()
 
 # --- live panel (auto-refreshes every 350 ms) ---
-vid_col, telem_col = st.columns([3, 2])
-
-
 @st.fragment(run_every=0.35)
 def _live():
+    # These columns must belong to the fragment.  Elements written into a
+    # container created *outside* a recurring fragment accumulate on each
+    # refresh, which was producing an endless stack of log panes.
+    vid_col, telem_col = st.columns([3, 2])
     snap = STATE.snapshot()
     jpeg, _ = STATE.get_frame()
 
@@ -213,11 +256,11 @@ def _live():
         log_html = ""
         for line in reversed(lines):
             if "⚠" in line:
-                log_html += f'<div class="log-warn">{line}</div>'
+                log_html += f'<div class="log-warn">{escape(line)}</div>'
             elif "✖" in line:
-                log_html += f'<div class="log-error">{line}</div>'
+                log_html += f'<div class="log-error">{escape(line)}</div>'
             else:
-                log_html += f"<div>{line}</div>"
+                log_html += f"<div>{escape(line)}</div>"
         st.markdown("**Event log**")
         st.markdown(f'<div class="log-box">{log_html}</div>', unsafe_allow_html=True)
 
