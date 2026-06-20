@@ -172,7 +172,9 @@ def _run_mission():
     STATE.update(running=True, mode="running")
     STATE.log("Mission started.")
     try:
-        main.takeoff()
+        if not main.takeoff():
+            STATE.log("Mission cancelled before takeoff completed.", "warn")
+            return
         main.look_down()
         reached = main.navigate_to_helmet()
         if reached:
@@ -210,6 +212,7 @@ stop_clicked  = b2.button("⏹ Stop / Land", disabled=not STATE.running,
                            use_container_width=True)
 
 if start_clicked and not STATE.running:
+    main.reset_mission()
     t = threading.Thread(target=_run_mission, daemon=True, name="mission")
     STATE.nav_thread = t
     t.start()
@@ -218,9 +221,9 @@ if start_clicked and not STATE.running:
 if stop_clicked:
     STATE.log("Emergency stop requested from dashboard.", "warn")
     try:
-        main.drone.land()
+        main.stop_and_land()
     except Exception as e:
-        STATE.log(f"drone.land() failed: {e}", "error")
+        STATE.log(f"Drone landing failed: {e}", "error")
     STATE.update(running=False, mode="LANDED")
     st.rerun()
 

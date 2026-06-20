@@ -2,6 +2,7 @@ from cyberwave import Cyberwave
 from time import sleep
 import os
 import math
+import threading
 import warnings
 from dotenv import load_dotenv
 
@@ -12,6 +13,7 @@ from IPython.display import display
 
 import vision
 import helmet_control as hc
+import robot_navigation
 
 load_dotenv()
 
@@ -24,13 +26,67 @@ cw.affect("real-world")  # commands target the real DJI aircraft (source_type="t
 drone = cw.twin("dji/dji-mini-3")
 
 
+# The dashboard can issue a manual landing while visual navigation is running.
+# This event stops that loop, and the lock guarantees one Go2 movement for
+# each drone mission.
+DRONE_LANDING_SETTLE_SECONDS = 5.0
+_mission_stop_requested = threading.Event()
+_landing_lock = threading.Lock()
+_landing_requested = False
+_robot_navigation_started = False
+
+
+def reset_mission() -> None:
+    """Prepare a new drone mission and allow one post-landing Go2 move."""
+    global _landing_requested, _robot_navigation_started
+    with _landing_lock:
+        _landing_requested = False
+        _robot_navigation_started = False
+    _mission_stop_requested.clear()
+
+
+def mission_stop_requested() -> bool:
+    """Return whether the dashboard has requested an immediate landing."""
+    return _mission_stop_requested.is_set()
+
+
+def _run_go2_after_landing() -> None:
+    """Wait for touchdown, then perform the single live Go2 action."""
+    print(f"Drone land command accepted; waiting {DRONE_LANDING_SETTLE_SECONDS:.0f}s before Go2 starts.")
+    sleep(DRONE_LANDING_SETTLE_SECONDS)
+    try:
+        robot_navigation.move_forward()
+    except Exception as exc:
+        # A Go2 failure must never restart or alter the drone mission.
+        print(f"Go2 navigation failed: {exc}")
+
+
+def _start_go2_after_landing() -> None:
+    """Schedule the Go2 movement once without blocking the dashboard UI."""
+    global _robot_navigation_started
+    with _landing_lock:
+        if _robot_navigation_started:
+            return
+        _robot_navigation_started = True
+
+    threading.Thread(
+        target=_run_go2_after_landing,
+        daemon=False,
+        name="go2-after-drone-landing",
+    ).start()
+
+
 def takeoff():
+    if _mission_stop_requested.is_set():
+        print("Takeoff skipped: landing was requested.")
+        return False
     print("Taking off…")
     # NOTE: on a real DJI Mini the altitude arg is ignored (firmware default
     # ~1.2 m); it only matters in the simulator. There is no SDK ascend command,
     # so we gain coverage with a shallow gimbal + translation, not altitude.
     drone.takeoff(altitude=2.5)
     sleep(5)
+    return not _mission_stop_requested.is_set()
 
 def search_target():
     drone.move_forward(distance=1.0)
@@ -186,6 +242,9 @@ def navigate_to_helmet():
     best_width = 0.0           # widest helmet seen so far this approach
     stale = 0                  # consecutive steps without getting closer
     for step in range(MAX_STEPS):
+        if _mission_stop_requested.is_set():
+            print("Stop requested — navigation loop ended before another drone command.")
+            return False
         frame = capture()
         helmet = vision.detect_helmet(frame)
         carpet = vision.detect_carpet(frame)
@@ -264,7 +323,7 @@ def navigate_to_helmet():
             print(f"✅ Reached the helmet ({why}) — landing nearby.")
             sleep(1)           # settle (DJI auto-hovers with no command sent)
             take_image()       # record the helmet before descending
-            drone.land()
+            land()
             return True
 
         # Map the controller's velocities onto discrete SDK moves.
@@ -320,22 +379,46 @@ def verify_movement():
 
 
 def land():
-    drone.land()
-    drone.land()
+    """Land the DJI once, then launch the Go2's one-metre live movement."""
+    global _landing_requested
+    with _landing_lock:
+        if _landing_requested:
+            return False
+        _landing_requested = True
+
+    try:
+        drone.land()
+    except Exception:
+        # Do not move the Go2 when the drone landing command failed.
+        with _landing_lock:
+            _landing_requested = False
+        raise
+
+    _start_go2_after_landing()
+    return True
+
+
+def stop_and_land():
+    """Stop visual navigation, then use the normal landing/Go2 sequence."""
+    _mission_stop_requested.set()
+    return land()
 
 
 if __name__ == "__main__":
+    reset_mission()
     try:
-        takeoff()
-        look_down()
-        # Uncomment to check whether the drone actually responds to movement:
-        # verify_movement()
-        reached = navigate_to_helmet()   # lands near the helmet on success
-        if reached:
-            print("Mission complete: helmet located in the catastrophe area.")
+        if takeoff():
+            look_down()
+            # Uncomment to check whether the drone actually responds to movement:
+            # verify_movement()
+            reached = navigate_to_helmet()   # lands near the helmet on success
+            if reached:
+                print("Mission complete: helmet located in the catastrophe area.")
+            else:
+                print("Mission ended without reaching the helmet.")
         else:
-            print("Mission ended without reaching the helmet.")
+            print("Mission cancelled before takeoff completed.")
     finally:
-        land()   # safety: harmless if already landed
+        land()   # safety: no-op if landing was already requested
 
 
