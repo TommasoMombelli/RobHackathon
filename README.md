@@ -16,7 +16,7 @@ In a search-and-rescue scenario, time is everything. This project deploys two au
 
 The drone is the eyes in the sky; the dog is the legs on the ground.
 
-> **Demo setup:** the rescue target is represented by a **yellow safety helmet** placed on a **blue carpet** (the simulated catastrophe area). No custom training data required — YOLO-World detects the helmet from a text prompt alone.
+> **Demo setup:** the rescue target is represented by a **yellow safety helmet** placed on a **blue carpet** (the simulated catastrophe area).
 
 ---
 
