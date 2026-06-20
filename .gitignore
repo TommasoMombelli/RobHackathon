@@ -1,0 +1,21 @@
+# Secrets — never commit real API keys
+.env
+
+# Python virtual environment
+venv/
+.venv/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Model weights (auto-downloaded by ultralytics on first run)
+*.pt
+weights/
+
+# Runtime / debug image output
+frame.png
+*_annotated.png
+
+# OS / editor
+.DS_Store
